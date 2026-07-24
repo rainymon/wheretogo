@@ -1,5 +1,2 @@
 streamlit>=1.44
-pandas>=2.0
 requests>=2.31
-folium>=0.17
-streamlit-folium>=0.23
