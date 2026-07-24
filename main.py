@@ -1234,7 +1234,7 @@ if st.session_state.get("condition_key") != condition_key:
 
 header_col, button_col = st.columns([3, 1])
 with header_col:
-    st.info(f"현재 조건에 맞는 행정동: **{len(candidates)}곳** / 전체 **{len(PLACES)}곳**")
+    st.info(f"**{len(candidates)}곳**이 기다려요")
 with button_col:
     draw_clicked = st.button(
         "🎲 오늘의 동네 뽑기",
@@ -1255,7 +1255,7 @@ if not candidates:
 
 place = st.session_state.get("selected_place")
 if not place:
-    st.info("버튼을 눌러 오늘의 서울 행정동을 뽑아보세요.")
+    st.info("버튼을 눌러 오늘의 서울 동네를 뽑아보세요.")
     st.stop()
 
 st.header(f"오늘의 서울 여행: {place['gu']} {place['name']}")
