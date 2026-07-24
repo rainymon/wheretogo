@@ -25,7 +25,7 @@ PARK_DATA_PATH = DATA_DIR / "seoul_parks.tsv"
 
 st.set_page_config(
     page_title="서울마실",
-    page_icon="🏃‍➡️",
+    page_icon="🧭",
     layout="wide",
 )
 
@@ -896,7 +896,7 @@ def show_place_card(item, index):
             st.write(item["address"])
 
 
-st.title("🏃‍➡️서울마실")
+st.title("🧭서울마실")
 st.write("이 동네는 어때요?")
 
 if PLACES_ERROR:
