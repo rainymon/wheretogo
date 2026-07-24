@@ -1042,12 +1042,10 @@ else:
     )
     st.image(
         map_url,
-        caption="브이월드 지도 · 파란색은 출발, 빨간색은 도착",
         use_container_width=True,
     )
 
 st.subheader("이 동네에서 해볼 일")
-st.caption("역사유적·문화시설·시장·공원은 각각 프로젝트의 해당 TSV 파일에서만 불러옵니다.")
 local_experiences = build_local_experiences(
     place["full_name"],
     place["gu"],
