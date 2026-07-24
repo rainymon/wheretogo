@@ -42,7 +42,7 @@ START_POINTS = {
 }
 
 EXCLUDED_BRANDS = {
-    "스타벅스", "투썸플레이스", "이디야", "메가커피", "메가엠지씨커피",
+    "스타벅스", "투썸플레이스", "이디야", "메가커피", "메가MGC커피",
     "컴포즈커피", "빽다방", "더벤티", "할리스", "엔제리너스", "폴바셋",
     "커피빈", "탐앤탐스", "파스쿠찌", "파리바게뜨", "파리바게트",
     "뚜레쥬르", "배스킨라빈스", "베스킨라빈스", "던킨", "설빙",
@@ -1002,7 +1002,7 @@ if st.session_state.get("condition_key") != condition_key:
 
 header_col, button_col = st.columns([3, 1])
 with header_col:
-    st.info(f"현재 조건에 맞는 행정동: **{len(candidates)}곳** / 전체 **{len(PLACES)}곳**")
+    st.info(f"**{len(candidates)}곳**이 기다려요")
 with button_col:
     draw_clicked = st.button(
         "🎲 오늘의 동네 뽑기",
@@ -1136,7 +1136,7 @@ with cafe_col:
             st.rerun()
 
 st.markdown("---")
-if st.button("🎲 다른 서울 행정동 뽑기", use_container_width=True):
+if st.button("🎲 다른 서울 동네 가기", use_container_width=True):
     st.session_state["selected_place"] = random.choice(candidates)
     st.session_state.pop("food_picks", None)
     st.session_state.pop("cafe_picks", None)
