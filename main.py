@@ -9,10 +9,11 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 import requests
+import xml.etree.ElementTree as ET
 import streamlit as st
 
 
-APP_VERSION = "ORDERED-HERITAGE-CULTURE-MARKET-PARK-20260724"
+APP_VERSION = "OFFICIAL-HERITAGE-SILENT-20260724"
 ADMIN_DONG_ZIP_URL = (
     "https://github.com/pknujsp/Korea_Administrative_Neighborhood_List/"
     "raw/refs/heads/main/korea.zip"
@@ -643,6 +644,103 @@ def fallback_local_things(place):
     )
 
 
+
+
+@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
+def load_seoul_registered_heritage():
+    """국가유산청 Open API에서 서울의 지정·등록 국가유산 목록을 가져온다.
+
+    네이버 장소검색 결과를 문화유산으로 추정하지 않고, 공식 목록에 포함된
+    항목만 역사유적으로 사용한다.
+    """
+    url = "https://www.khs.go.kr/cha/SearchKindOpenapiList.do"
+    params = {
+        "pageUnit": 2000,
+        "pageIndex": 1,
+        "ccbaCtcd": "11",  # 서울특별시
+    }
+    headers = {
+        "User-Agent": "WhereToGoSeoul/1.0 educational-streamlit-app"
+    }
+
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=20)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+    except (requests.RequestException, ET.ParseError):
+        return []
+
+    items = []
+    for node in root.findall(".//item"):
+        def value(tag):
+            element = node.find(tag)
+            return element.text.strip() if element is not None and element.text else ""
+
+        name = value("ccbaMnm1")
+        location = value("ccbaLcad")
+        category = value("ccmaName")
+        kind_code = value("ccbaKdcd")
+        asset_number = value("ccbaAsno")
+        city_code = value("ccbaCtcd") or "11"
+
+        if not name:
+            continue
+
+        detail_url = (
+            "https://www.khs.go.kr/cha/SearchKindOpenapiDt.do?"
+            + urlencode({
+                "ccbaKdcd": kind_code,
+                "ccbaAsno": asset_number,
+                "ccbaCtcd": city_code,
+            })
+        )
+        items.append({
+            "name": name,
+            "location": location,
+            "category": category,
+            "url": detail_url,
+        })
+
+    return items
+
+
+def get_registered_heritage_for_place(place):
+    """선택한 행정동과 공식 국가유산 소재지를 대조한다."""
+    gu = place.get("gu", "").strip()
+    dong = place.get("name", "").strip()
+
+    target_stems = {normalize_dong_stem(dong)}
+    target_stems.update(
+        normalize_dong_stem(alias)
+        for alias in ADMIN_DONG_MARKET_ALIASES.get(dong, [])
+    )
+    target_stems.discard("")
+
+    matches = []
+    for heritage in load_seoul_registered_heritage():
+        location = heritage.get("location", "")
+        if gu and gu not in location:
+            continue
+
+        location_tokens = re.findall(r"[가-힣]+(?:\d+가|\d*동)", location)
+        location_stems = {normalize_dong_stem(token) for token in location_tokens}
+
+        if target_stems & location_stems:
+            matches.append(heritage)
+
+    # 같은 유산 중복 방지
+    unique = []
+    seen = set()
+    for heritage in matches:
+        key = normalize_text(heritage["name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(heritage)
+
+    return unique
+
+
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def build_local_experiences(full_name, gu, dong, client_id, client_secret):
     """활동을 역사유적 → 문화시설 → 시장 → 공원 순서로 생성한다."""
@@ -676,30 +774,25 @@ def build_local_experiences(full_name, gu, dong, client_id, client_secret):
                     return item
         return None
 
-    # 1. 역사유적: 문화재·국가유산·사적·유적 관련 결과를 우선한다.
-    heritage = first_matching_place(
-        [
-            f"{full_name} 문화재",
-            f"{gu} {dong} 국가유산",
-            f"{gu} {dong} 사적 유적",
-        ],
-        ["문화재", "국가유산", "사적", "유적", "기념물", "고택", "성곽", "능", "묘"],
-    )
-    if heritage:
+    # 1. 역사유적: 국가유산청 공식 목록에 등록된 항목만 사용한다.
+    registered_heritage = get_registered_heritage_for_place(place)
+    if registered_heritage:
+        heritage = registered_heritage[0]
+        category_text = f" ({heritage['category']})" if heritage.get("category") else ""
         results.append({
             "type": "역사유적",
             "icon": "🏛️",
-            "text": f"{heritage['name']}에서 안내판을 읽고, 이 장소가 보존되는 이유와 동네 역사와의 연결점을 찾아보기",
-            "place": heritage,
+            "text": (
+                f"{heritage['name']}{category_text}의 공식 지정 정보를 확인하고, "
+                f"현재의 {dong} 풍경과 어떤 관계가 있는지 살펴보기"
+            ),
+            "place": {
+                "name": heritage["name"],
+                "category": heritage.get("category", "국가유산"),
+                "address": heritage.get("location", ""),
+                "url": heritage.get("url", ""),
+            },
         })
-    else:
-        results.append({
-            "type": "역사유적",
-            "icon": "🏛️",
-            "text": f"{dong}에서 문화재·국가유산 안내판이나 오래된 건축 흔적을 찾아 그 유래를 확인하기",
-            "place": None,
-        })
-
     # 2. 문화시설: 박물관·미술관·도서관·문화센터·공연장 등을 찾는다.
     culture = first_matching_place(
         [
