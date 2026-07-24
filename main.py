@@ -1010,7 +1010,7 @@ if not candidates:
 
 place = st.session_state.get("selected_place")
 if not place:
-    st.info("버튼을 눌러 오늘의 서울 농네를 뽑아보세요.")
+    st.info("버튼을 눌러 오늘의 서울 동네를 뽑아보세요.")
     st.stop()
 
 st.header(f"오늘의 서울 여행: {place['gu']} {place['name']}")
