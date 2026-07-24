@@ -42,7 +42,7 @@ START_POINTS = {
 }
 
 EXCLUDED_BRANDS = {
-    "스타벅스", "투썸플레이스", "이디야", "메가커피", "메가엠지씨커피",
+    "스타벅스", "투썸플레이스", "이디야", "메가커피", "메가MGC커피",
     "컴포즈커피", "빽다방", "더벤티", "할리스", "엔제리너스", "폴바셋",
     "커피빈", "탐앤탐스", "파스쿠찌", "파리바게뜨", "파리바게트",
     "뚜레쥬르", "배스킨라빈스", "베스킨라빈스", "던킨", "설빙",
@@ -809,16 +809,28 @@ def build_local_experiences(full_name, gu, dong):
     results = []
 
     # 1. 역사유적: data/seoul_heritage.tsv만 사용
-    heritage_items = random_three(match_facilities_to_place(SEOUL_HERITAGE, place))
-    if heritage_items:
-        results.append({
-            "type": "역사유적",
-            "icon": "🏛️",
-            "facilities": [
-                {"name": item.get("name", ""), "url": facility_link(item)}
-                for item in heritage_items
-            ],
-        })
+   # 1. 역사유적: seoul_heritage.tsv만 사용
+heritage_items = random_three(
+    match_facilities_to_place(SEOUL_HERITAGE, place)
+)
+
+if heritage_items:
+    results.append({
+        "type": "역사유적",
+        "icon": "🏛️",
+        "facilities": [
+            {
+                "name": item.get("name", ""),
+                "url": (
+                    "https://search.naver.com/search.naver?query="
+                    + quote(
+                        f'site:heritage.go.kr "{item.get("name", "")}"'
+                    )
+                ),
+            }
+            for item in heritage_items
+        ],
+    })
 
     # 2. 문화시설: data/seoul_culture.tsv만 사용
     culture_items = random_three(match_facilities_to_place(SEOUL_CULTURE, place))
