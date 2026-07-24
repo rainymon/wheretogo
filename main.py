@@ -650,10 +650,42 @@ def fallback_local_things(place):
 
 @st.cache_data(show_spinner=False)
 def load_facility_tsv(path):
+    """UTF-8, CP949, EUC-KR, UTF-16 TSV 파일을 안전하게 읽는다."""
     if not path.exists():
         return []
-    with path.open("r", encoding="utf-8-sig", newline="") as file:
-        return list(csv.DictReader(file, delimiter="\t"))
+
+    raw = path.read_bytes()
+    decoded = None
+    used_encoding = None
+
+    # 서울시 공개데이터를 엑셀에서 다시 저장하면 CP949로 바뀌는 경우가 있다.
+    for encoding in ("utf-8-sig", "utf-8", "cp949", "euc-kr", "utf-16"):
+        try:
+            decoded = raw.decode(encoding)
+            used_encoding = encoding
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if decoded is None:
+        st.warning(f"데이터 파일의 문자 인코딩을 확인할 수 없습니다: {path.name}")
+        return []
+
+    # UTF-16 등에서 남을 수 있는 BOM과 NUL 문자를 정리한다.
+    decoded = decoded.lstrip("\ufeff").replace("\x00", "")
+    reader = csv.DictReader(io.StringIO(decoded, newline=""), delimiter="\t")
+    rows = [
+        {str(key).strip(): (value.strip() if isinstance(value, str) else value)
+         for key, value in row.items() if key is not None}
+        for row in reader
+    ]
+
+    # 열 구분자가 탭이 아닌 파일을 잘못 올린 경우 빈 데이터로 처리한다.
+    if reader.fieldnames and len(reader.fieldnames) == 1:
+        st.warning(f"{path.name} 파일이 TSV 형식인지 확인해 주세요. 열 구분자는 탭이어야 합니다.")
+        return []
+
+    return rows
 
 
 SEOUL_HERITAGE = load_facility_tsv(HERITAGE_DATA_PATH)
