@@ -909,7 +909,7 @@ def show_place_card(item, index):
 
 
 st.title("🧭 어디갈까? 서울")
-st.write("생각 밖의 서울로 떠나봐요🎒")
+st.write("뜻빆의 서울로 떠나봐요🎒")
 
 if PLACES_ERROR:
     st.error(f"서울 행정동 자료를 불러오지 못했습니다: {PLACES_ERROR}")
