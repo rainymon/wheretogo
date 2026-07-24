@@ -13,12 +13,16 @@ import xml.etree.ElementTree as ET
 import streamlit as st
 
 
-
+APP_VERSION = "OFFICIAL-HERITAGE-SILENT-20260724"
+ADMIN_DONG_ZIP_URL = (
+    "https://github.com/pknujsp/Korea_Administrative_Neighborhood_List/"
+    "raw/refs/heads/main/korea.zip"
+)
 
 MARKET_DATA_PATH = Path(__file__).parent / "data" / "seoul_markets.tsv"
 
 st.set_page_config(
-    page_title="서울마실",
+    page_title="어디갈까? 서울",
     page_icon="🧭",
     layout="wide",
 )
@@ -737,17 +741,37 @@ def get_registered_heritage_for_place(place):
     return unique
 
 
-@st.cache_data(ttl=60 * 60, show_spinner=False)
 def build_local_experiences(full_name, gu, dong, client_id, client_secret):
-    """활동을 역사유적 → 문화시설 → 시장 → 공원 순서로 생성한다."""
+    """시설을 역사유적 → 문화시설 → 시장 → 공원 순서로 반환한다.
+
+    각 분류에 후보가 여러 개 있으면 중복 없이 최대 3개를 무작위 선택한다.
+    """
     place = {"full_name": full_name, "gu": gu, "name": dong}
     results = []
 
-    def first_matching_place(queries, preferred_keywords):
-        if not client_id or not client_secret:
-            return None
-
+    def random_three(items):
+        unique = []
         seen = set()
+        for item in items:
+            name = item.get("name", "").strip()
+            key = normalize_text(name)
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+
+        if len(unique) <= 3:
+            return unique
+        return random.sample(unique, 3)
+
+    def matching_places(queries, preferred_keywords):
+        if not client_id or not client_secret:
+            return []
+
+        matches = []
+        fallbacks = []
+        seen = set()
+
         for query in queries:
             items, _ = naver_local_search(query, client_id, client_secret)
             for item in items:
@@ -760,105 +784,89 @@ def build_local_experiences(full_name, gu, dong, client_id, client_secret):
 
                 combined = normalize_text(f"{name} {category}")
                 if any(normalize_text(word) in combined for word in preferred_keywords):
-                    return item
+                    matches.append(item)
+                else:
+                    fallbacks.append(item)
 
-        # 검색 결과의 분류명이 충분하지 않은 경우 첫 번째 유효 결과 사용
-        for query in queries:
-            items, _ = naver_local_search(query, client_id, client_secret)
-            for item in items:
-                if item.get("name", "").strip():
-                    return item
-        return None
+        # 키워드가 맞는 결과를 우선하고, 부족할 때만 일반 검색 결과로 채운다.
+        combined_items = matches + fallbacks
+        return random_three(combined_items)
 
-    # 1. 역사유적: 국가유산청 공식 목록에 등록된 항목만 사용한다.
-    registered_heritage = get_registered_heritage_for_place(place)
+    # 1. 역사유적: 국가유산청 공식 목록에 등록된 항목만 표시
+    registered_heritage = random_three(get_registered_heritage_for_place(place))
     if registered_heritage:
-        heritage = registered_heritage[0]
-        category_text = f" ({heritage['category']})" if heritage.get("category") else ""
         results.append({
             "type": "역사유적",
             "icon": "🏛️",
-            "text": (
-                f"{heritage['name']}{category_text}의 공식 지정 정보를 확인하고, "
-                f"현재의 {dong} 풍경과 어떤 관계가 있는지 살펴보기"
-            ),
-            "place": {
-                "name": heritage["name"],
-                "category": heritage.get("category", "국가유산"),
-                "address": heritage.get("location", ""),
-                "url": heritage.get("url", ""),
-            },
+            "facilities": [
+                {
+                    "name": heritage["name"],
+                    "url": heritage.get("url", ""),
+                }
+                for heritage in registered_heritage
+            ],
         })
-    # 2. 문화시설: 박물관·미술관·도서관·문화센터·공연장 등을 찾는다.
-    culture = first_matching_place(
+
+    # 2. 문화시설
+    culture_items = matching_places(
         [
             f"{full_name} 문화시설",
             f"{gu} {dong} 박물관 미술관",
             f"{gu} {dong} 도서관 문화센터 공연장",
+            f"{gu} {dong} 갤러리 전시관 문학관",
         ],
         ["박물관", "미술관", "도서관", "문화", "공연", "전시", "갤러리", "문학관"],
     )
-    if culture:
+    if culture_items:
         results.append({
             "type": "문화시설",
             "icon": "🎭",
-            "text": f"{culture['name']}의 전시·프로그램을 확인하고, 이 동네의 생활문화가 드러나는 요소 한 가지 기록하기",
-            "place": culture,
-        })
-    else:
-        results.append({
-            "type": "문화시설",
-            "icon": "🎭",
-            "text": f"{dong}의 도서관·문화센터·작은 전시공간 중 한 곳을 찾아 현재 운영 프로그램 확인하기",
-            "place": None,
+            "facilities": [
+                {
+                    "name": item["name"],
+                    "url": item.get("url", ""),
+                }
+                for item in culture_items
+            ],
         })
 
-    # 3. 시장: 사용자가 제공한 서울 전통시장 목록과 행정동을 연결한다.
-    markets = get_markets_for_place(place)
-    if markets:
-        market_names = " · ".join(market["name"] for market in markets[:2])
-        if len(markets) == 1:
-            market_text = f"{market_names}에서 이 동네 주민들이 자주 사는 먹거리나 생활 상품 한 가지를 골라보기"
-        else:
-            market_text = f"{market_names}을 차례로 둘러보며 판매 품목과 골목 분위기의 차이를 비교하기"
+    # 3. 시장: 사용자가 제공한 서울 전통시장 목록과 행정동 연결
+    market_candidates = [
+        {
+            "name": market["name"],
+            "url": naver_map_url(market["name"]),
+        }
+        for market in get_markets_for_place(place)
+    ]
+    market_items = random_three(market_candidates)
+    if market_items:
         results.append({
             "type": "시장",
             "icon": "🛍️",
-            "text": market_text,
-            "place": None,
-            "markets": markets,
-        })
-    else:
-        results.append({
-            "type": "시장",
-            "icon": "🛍️",
-            "text": f"제공된 전통시장 목록에서 {dong}과 직접 연결되는 시장을 찾지 못했습니다.",
-            "place": None,
-            "markets": [],
+            "facilities": market_items,
         })
 
-    # 4. 공원: 공원·하천·산책공간 관련 결과를 우선한다.
-    park = first_matching_place(
+    # 4. 공원
+    park_items = matching_places(
         [
             f"{full_name} 공원",
             f"{gu} {dong} 근린공원",
             f"{gu} {dong} 산책로 하천",
+            f"{gu} {dong} 둘레길 숲 생태공원",
         ],
         ["공원", "산책", "하천", "둘레길", "숲", "생태", "한강", "천"],
     )
-    if park:
+    if park_items:
         results.append({
             "type": "공원",
             "icon": "🌳",
-            "text": f"{park['name']}을 출발점으로 30분 산책하며 주거지·상가·녹지가 바뀌는 지점을 관찰하기",
-            "place": park,
-        })
-    else:
-        results.append({
-            "type": "공원",
-            "icon": "🌳",
-            "text": f"{dong}에서 가장 가까운 공원이나 하천 산책로를 찾아 30분짜리 동네 산책 경로 만들기",
-            "place": None,
+            "facilities": [
+                {
+                    "name": item["name"],
+                    "url": item.get("url", ""),
+                }
+                for item in park_items
+            ],
         })
 
     return results
@@ -891,7 +899,6 @@ def show_place_card(item, index):
 
 
 st.title("🧭 어디갈까? 서울")
-st.caption(f"앱 버전: {APP_VERSION}")
 st.write("서울의 모든 행정동 중 평소 갈 이유가 없었던 동네를 랜덤으로 발견해 보세요.")
 
 if PLACES_ERROR:
@@ -1051,21 +1058,22 @@ local_experiences = build_local_experiences(
 )
 for index, item in enumerate(local_experiences, start=1):
     st.markdown(f"### {index}. {item['icon']} {item['type']}")
-    st.write(item["text"])
-    linked_place = item.get("place")
-    if linked_place and linked_place.get("url"):
-        st.link_button("🔗", linked_place["url"], key=f"activity_link_{index}")
-
-matched_markets = get_markets_for_place(place)
-if matched_markets:
-    with st.expander(f"🛍️ 이 행정동과 연결된 시장 {len(matched_markets)}곳"):
-        for market in matched_markets:
-            address = market["road_address"] or market["lot_address"]
-            st.markdown(f"- **{market['name']}** · {market['market_type']} · {address}")
-
-with st.expander("🎯 여행에 우연성 더하기"):
-    for mission in random.sample(MISSIONS, k=2):
-        st.markdown(f"- {mission}")
+    for facility_index, facility in enumerate(item.get("facilities", []), start=1):
+        name = facility.get("name", "").strip()
+        url = facility.get("url", "").strip()
+        if not name:
+            continue
+        col_name, col_link = st.columns([8, 1])
+        with col_name:
+            st.write(name)
+        with col_link:
+            if url:
+                st.link_button(
+                    "🔗",
+                    url,
+                    key=f"activity_link_{index}_{facility_index}",
+                    help="지도 또는 공식 페이지에서 확인",
+                )
 
 food_items, food_error = search_multiple_queries(
     place["food_queries"],
