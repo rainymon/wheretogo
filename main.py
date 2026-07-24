@@ -13,16 +13,12 @@ import xml.etree.ElementTree as ET
 import streamlit as st
 
 
-APP_VERSION = "OFFICIAL-HERITAGE-SILENT-20260724"
-ADMIN_DONG_ZIP_URL = (
-    "https://github.com/pknujsp/Korea_Administrative_Neighborhood_List/"
-    "raw/refs/heads/main/korea.zip"
-)
+
 
 MARKET_DATA_PATH = Path(__file__).parent / "data" / "seoul_markets.tsv"
 
 st.set_page_config(
-    page_title="어디갈까? 서울",
+    page_title="서울마실",
     page_icon="🧭",
     layout="wide",
 )
