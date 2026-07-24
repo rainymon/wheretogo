@@ -1207,7 +1207,6 @@ st.link_button(
     use_container_width=True,
 )
 
-st.subheader("브이월드 지도")
 if not vworld_api_key:
     st.error("VWORLD_API_KEY가 설정되지 않았습니다.")
 else:
@@ -1221,7 +1220,6 @@ else:
     )
     st.image(
         map_url,
-        caption="브이월드 지도 · 파란색은 출발, 빨간색은 도착",
         use_container_width=True,
     )
 
