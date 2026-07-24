@@ -896,8 +896,8 @@ def show_place_card(item, index):
             st.write(item["address"])
 
 
-st.title("🧭 어디갈까? 서울")
-st.write("서울의 모든 행정동 중 평소 갈 이유가 없었던 동네를 랜덤으로 발견해 보세요.")
+st.title("🏃‍➡️서울마실")
+st.write("이 동네는 어때요?")
 
 if PLACES_ERROR:
     st.error(f"서울 행정동 자료를 불러오지 못했습니다: {PLACES_ERROR}")
@@ -1010,7 +1010,7 @@ if not candidates:
 
 place = st.session_state.get("selected_place")
 if not place:
-    st.info("버튼을 눌러 오늘의 서울 행정동을 뽑아보세요.")
+    st.info("버튼을 눌러 오늘의 서울 농네를 뽑아보세요.")
     st.stop()
 
 st.header(f"오늘의 서울 여행: {place['gu']} {place['name']}")
