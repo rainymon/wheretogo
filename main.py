@@ -789,15 +789,13 @@ def random_three(items):
 
 
 def heritage_official_link(item):
-    """유산명을 국가유산청 공식 사이트 범위에서 검색한다."""
+    """역사유적명을 네이버에서 그대로 검색한 결과로 연결한다."""
     name = str(item.get("name", "") or "").strip()
-    if not name:
-        return "https://www.heritage.go.kr/"
 
-    # 국가유산포털의 내부 검색 주소는 변경되거나 검색어가 전달되지 않는
-    # 경우가 있어, 공식 도메인만 대상으로 검색하는 링크를 사용한다.
-    query = f'site:heritage.go.kr OR site:cha.go.kr "{name}"'
-    return "https://search.naver.com/search.naver?query=" + quote(query)
+    if not name:
+        return "https://search.naver.com/search.naver"
+
+    return "https://search.naver.com/search.naver?query=" + quote(name)
 
 
 def facility_link(item):
