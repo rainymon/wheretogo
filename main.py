@@ -24,8 +24,8 @@ CULTURE_DATA_PATH = DATA_DIR / "seoul_culture.tsv"
 PARK_DATA_PATH = DATA_DIR / "seoul_parks.tsv"
 
 st.set_page_config(
-    page_title="어디갈까? 서울",
-    page_icon="🧭",
+    page_title="서울마실",
+    page_icon="🏃‍➡️",
     layout="wide",
 )
 
@@ -990,7 +990,7 @@ if st.session_state.get("condition_key") != condition_key:
 
 header_col, button_col = st.columns([3, 1])
 with header_col:
-    st.info(f"현재 조건에 맞는 행정동: **{len(candidates)}곳** / 전체 **{len(PLACES)}곳**")
+    st.info(f"**{len(candidates)}곳**이 기다려요")
 with button_col:
     draw_clicked = st.button(
         "🎲 오늘의 동네 뽑기",
@@ -1115,7 +1115,7 @@ with cafe_col:
             st.rerun()
 
 st.markdown("---")
-if st.button("🎲 다른 서울 행정동 뽑기", use_container_width=True):
+if st.button("🎲 다른 동네 가기", use_container_width=True):
     st.session_state["selected_place"] = random.choice(candidates)
     st.session_state.pop("food_picks", None)
     st.session_state.pop("cafe_picks", None)
