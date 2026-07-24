@@ -466,19 +466,7 @@ def search_multiple_queries(queries, client_id, client_secret):
     merged = merge_unique_places(groups)
     return merged, errors[0] if not merged and errors else ""
 
-WORK_SEARCH_KEYWORDS = [
-    "영화 촬영지",
-    "드라마 촬영지",
-    "영화 배경",
-    "드라마 배경",
-    "소설 배경",
-    "문학 작품",
-]
 
-WORK_RELATED_WORDS = (
-    "영화", "드라마", "촬영", "촬영지", "소설", "문학",
-    "작품", "시인", "작가", "감독", "웹툰",
-)
 
 
 def clean_search_text(value):
@@ -635,69 +623,6 @@ def generate_neighborhood_summary(
     except (requests.RequestException, ValueError, KeyError, IndexError) as exc:
         return "", f"Solar API 연결 오류: {exc}"
 
-def local_work_location_terms(gu, dong):
-    """행정동 숫자 표기 차이를 고려한 검색·검증용 지역명 목록을 만든다."""
-    terms = {dong, f"{gu} {dong}"}
-    base_dong = re.sub(r"제?\d+(?=동$)", "", dong)
-    if base_dong and base_dong != dong:
-        terms.add(base_dong)
-        terms.add(f"{gu} {base_dong}")
-    for alias in ADMIN_DONG_MARKET_ALIASES.get(dong, []):
-        terms.add(alias)
-        terms.add(f"{gu} {alias}")
-    return {term.strip() for term in terms if term.strip()}
-
-
-@st.cache_data(ttl=60 * 60, show_spinner=False)
-def find_local_works(gu, dong, client_id, client_secret):
-    """해당 동과 문학·영화·드라마의 관련성을 보여 주는 웹문서 후보를 찾는다.
-
-    검색 결과 제목을 작품명으로 단정하지 않고, 원문 제목과 링크를 그대로 제공한다.
-    """
-    location_terms = local_work_location_terms(gu, dong)
-    primary_dong = re.sub(r"제?\d+(?=동$)", "", dong) or dong
-    candidates = []
-    errors = []
-
-    for keyword in WORK_SEARCH_KEYWORDS:
-        query = f'"{gu} {primary_dong}" {keyword}'
-        items, error = naver_web_search(
-            query, client_id, client_secret, display=10
-        )
-        if error:
-            errors.append(error)
-            continue
-
-        for item in items:
-            title = clean_search_text(item.get("title"))
-            description = clean_search_text(item.get("description"))
-            link = str(item.get("link", "") or "").strip()
-            combined = f"{title} {description}"
-
-            if not title or not link:
-                continue
-            if not any(term in combined for term in location_terms):
-                continue
-            if not any(word in combined for word in WORK_RELATED_WORDS):
-                continue
-
-            candidates.append({
-                "name": title,
-                "url": link,
-                "description": description,
-            })
-
-    unique = []
-    seen = set()
-    for item in candidates:
-        key = normalize_text(item["name"])
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-
-    error = errors[0] if not unique and errors else ""
-    return unique, error
 
 
 LOCAL_SIGNATURES = {
@@ -1325,33 +1250,7 @@ for index, item in enumerate(local_experiences, start=1):
                     help="지도 또는 공식 페이지에서 확인",
                 )
 
-st.subheader("📚 이 동네와 관련된 문학·영화·드라마")
-st.caption("네이버 웹문서 검색에서 동네 이름과 작품 관련 단어가 함께 확인된 결과를 보여줍니다.")
-work_items, work_error = find_local_works(
-    place["gu"],
-    place["name"],
-    naver_client_id,
-    naver_client_secret,
-)
-if "work_picks" not in st.session_state:
-    st.session_state["work_picks"] = random_three(work_items)
 
-if work_error:
-    st.error(work_error)
-elif not st.session_state["work_picks"]:
-    st.info("이 동네와 관련된 작품·촬영지 검색 결과를 찾지 못했습니다.")
-else:
-    for work_index, item in enumerate(st.session_state["work_picks"], start=1):
-        name = item.get("name", "").strip()
-        url = item.get("url", "").strip()
-        if name and url:
-            st.markdown(f'{work_index}. [{name}]({url})')
-    if len(work_items) > 3 and st.button(
-        "🔄 관련 작품 정보 다시 뽑기",
-        use_container_width=True,
-    ):
-        st.session_state["work_picks"] = random_three(work_items)
-        st.rerun()
 
 food_items, food_error = search_multiple_queries(
     place["food_queries"],
