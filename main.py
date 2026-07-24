@@ -1139,7 +1139,7 @@ def show_place_card(item, index):
 
 
 st.title("🧭 어디갈까? 서울")
-st.write("서울의 모든 행정동 중 평소 갈 이유가 없었던 동네를 랜덤으로 발견해 보세요.")
+st.write("뜻밖의 서울로 떠나봐요🎒")
 
 if PLACES_ERROR:
     st.error(f"서울 행정동 자료를 불러오지 못했습니다: {PLACES_ERROR}")
@@ -1301,7 +1301,6 @@ else:
     )
 
 st.subheader("이 동네에서 해볼 일")
-st.caption("역사유적·문화시설·시장·공원은 각각 프로젝트의 해당 TSV 파일에서만 불러옵니다.")
 local_experiences = build_local_experiences(
     place["full_name"],
     place["gu"],
@@ -1406,7 +1405,7 @@ with cafe_col:
             st.rerun()
 
 st.markdown("---")
-if st.button("🎲 다른 서울 행정동 뽑기", use_container_width=True):
+if st.button("🎲 다른 서울 동네 가기", use_container_width=True):
     st.session_state["selected_place"] = random.choice(candidates)
     st.session_state.pop("food_picks", None)
     st.session_state.pop("cafe_picks", None)
