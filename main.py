@@ -42,7 +42,7 @@ START_POINTS = {
 }
 
 EXCLUDED_BRANDS = {
-    "스타벅스", "투썸플레이스", "이디야", "메가커피", "메가MGC커피",
+    "스타벅스", "투썸플레이스", "이디야", "메가커피", "메가엠지씨커피",
     "컴포즈커피", "빽다방", "더벤티", "할리스", "엔제리너스", "폴바셋",
     "커피빈", "탐앤탐스", "파스쿠찌", "파리바게뜨", "파리바게트",
     "뚜레쥬르", "배스킨라빈스", "베스킨라빈스", "던킨", "설빙",
@@ -172,7 +172,7 @@ def load_seoul_admin_dongs():
                 "arrival": f"서울특별시 {gu} {dong}",
                 "lat": lat,
                 "lon": lon,
-                "intro": f"서울 {gu}의 {dong}을 목적지로 삼아 이 동네에 실제로 있는 장소와 생활 문화를 발견해 보세요.",
+                "intro": "",
                 "food_queries": [
                     f"{gu} {dong} 현지인 맛집",
                     f"{gu} {dong} 노포",
@@ -465,6 +465,239 @@ def search_multiple_queries(queries, client_id, client_secret):
             errors.append(error)
     merged = merge_unique_places(groups)
     return merged, errors[0] if not merged and errors else ""
+
+WORK_SEARCH_KEYWORDS = [
+    "영화 촬영지",
+    "드라마 촬영지",
+    "영화 배경",
+    "드라마 배경",
+    "소설 배경",
+    "문학 작품",
+]
+
+WORK_RELATED_WORDS = (
+    "영화", "드라마", "촬영", "촬영지", "소설", "문학",
+    "작품", "시인", "작가", "감독", "웹툰",
+)
+
+
+def clean_search_text(value):
+    """네이버 검색 결과의 HTML 태그와 엔티티를 제거한다."""
+    text = html.unescape(str(value or ""))
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def naver_web_search(query, client_id, client_secret, display=10):
+    """네이버 웹문서 검색 결과를 가져온다."""
+    if not client_id or not client_secret:
+        return [], "네이버 API 키가 설정되지 않았습니다."
+
+    try:
+        response = requests.get(
+            "https://openapi.naver.com/v1/search/webkr.json",
+            headers={
+                "X-Naver-Client-Id": client_id,
+                "X-Naver-Client-Secret": client_secret,
+            },
+            params={
+                "query": query,
+                "display": min(max(int(display), 1), 100),
+                "start": 1,
+                "sort": "sim",
+            },
+            timeout=10,
+        )
+        if response.status_code != 200:
+            return [], f"네이버 웹검색 API 오류 {response.status_code}: {response.text[:160]}"
+        return response.json().get("items", []), ""
+    except (requests.RequestException, ValueError) as exc:
+        return [], f"네이버 웹검색 연결 오류: {exc}"
+
+
+
+@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
+def collect_neighborhood_search_results(gu, dong, client_id, client_secret):
+    """행정동의 성격을 설명할 근거가 될 웹문서 검색 결과를 모은다."""
+    primary_dong = re.sub(r"제?\d+(?=동$)", "", dong) or dong
+    queries = [
+        f'"{gu} {primary_dong}" 동네 특징',
+        f'"{gu} {primary_dong}" 역사 문화',
+        f'"{gu} {primary_dong}" 주거 상권',
+        f'"{gu} {primary_dong}" 시장 공원 골목',
+    ]
+
+    collected = []
+    seen = set()
+    errors = []
+
+    for query in queries:
+        items, error = naver_web_search(
+            query, client_id, client_secret, display=8
+        )
+        if error:
+            errors.append(error)
+            continue
+
+        for item in items:
+            title = clean_search_text(item.get("title"))
+            description = clean_search_text(item.get("description"))
+            link = str(item.get("link", "") or "").strip()
+            combined = f"{title} {description}"
+
+            if not title or not description:
+                continue
+            if primary_dong not in combined and dong not in combined:
+                continue
+
+            key = normalize_text(title)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            collected.append({
+                "title": title,
+                "description": description,
+                "link": link,
+            })
+
+    return collected[:20], (errors[0] if not collected and errors else "")
+
+
+@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
+def generate_neighborhood_summary(
+    gu, dong, naver_client_id, naver_client_secret, solar_api_key
+):
+    """검색 결과만 근거로 Solar가 행정동 특성을 두 문장으로 요약한다."""
+    if not solar_api_key:
+        return "", "SOLAR_API_KEY가 설정되지 않았습니다."
+
+    sources, search_error = collect_neighborhood_search_results(
+        gu, dong, naver_client_id, naver_client_secret
+    )
+    if not sources:
+        return "", search_error
+
+    source_text = "\n".join(
+        f"- {item['title']}: {item['description']}"
+        for item in sources[:15]
+    )
+    prompt = f"""
+아래 검색 결과만 근거로 서울 {gu} {dong}이 어떤 동네인지 소개해 주세요.
+
+작성 조건:
+- 자연스러운 한국어 2문장
+- 전체 100~160자 정도
+- 역사, 생활문화, 상권, 주거 분위기, 대표 공간 중 검색 결과로 확인되는 특징을 중심으로 작성
+- 특정 맛집이나 업체 이름을 나열하지 말 것
+- 검색 결과에 없는 사실은 추측하지 말 것
+- 광고성 표현, 방문 권유, 과장 표현을 쓰지 말 것
+- 출처나 검색 결과라는 말은 쓰지 말 것
+
+검색 결과:
+{source_text}
+""".strip()
+
+    try:
+        response = requests.post(
+            "https://api.upstage.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {solar_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "solar-pro3",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "검색 자료를 근거로 서울 동네의 특성을 "
+                            "정확하고 간결하게 요약하는 한국어 작성자입니다."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 220,
+            },
+            timeout=30,
+        )
+        if response.status_code != 200:
+            return "", f"Solar API 오류 {response.status_code}: {response.text[:180]}"
+
+        data = response.json()
+        summary = str(
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        ).strip()
+        summary = re.sub(r"\s+", " ", summary)
+        return summary, ""
+    except (requests.RequestException, ValueError, KeyError, IndexError) as exc:
+        return "", f"Solar API 연결 오류: {exc}"
+
+def local_work_location_terms(gu, dong):
+    """행정동 숫자 표기 차이를 고려한 검색·검증용 지역명 목록을 만든다."""
+    terms = {dong, f"{gu} {dong}"}
+    base_dong = re.sub(r"제?\d+(?=동$)", "", dong)
+    if base_dong and base_dong != dong:
+        terms.add(base_dong)
+        terms.add(f"{gu} {base_dong}")
+    for alias in ADMIN_DONG_MARKET_ALIASES.get(dong, []):
+        terms.add(alias)
+        terms.add(f"{gu} {alias}")
+    return {term.strip() for term in terms if term.strip()}
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def find_local_works(gu, dong, client_id, client_secret):
+    """해당 동과 문학·영화·드라마의 관련성을 보여 주는 웹문서 후보를 찾는다.
+
+    검색 결과 제목을 작품명으로 단정하지 않고, 원문 제목과 링크를 그대로 제공한다.
+    """
+    location_terms = local_work_location_terms(gu, dong)
+    primary_dong = re.sub(r"제?\d+(?=동$)", "", dong) or dong
+    candidates = []
+    errors = []
+
+    for keyword in WORK_SEARCH_KEYWORDS:
+        query = f'"{gu} {primary_dong}" {keyword}'
+        items, error = naver_web_search(
+            query, client_id, client_secret, display=10
+        )
+        if error:
+            errors.append(error)
+            continue
+
+        for item in items:
+            title = clean_search_text(item.get("title"))
+            description = clean_search_text(item.get("description"))
+            link = str(item.get("link", "") or "").strip()
+            combined = f"{title} {description}"
+
+            if not title or not link:
+                continue
+            if not any(term in combined for term in location_terms):
+                continue
+            if not any(word in combined for word in WORK_RELATED_WORDS):
+                continue
+
+            candidates.append({
+                "name": title,
+                "url": link,
+                "description": description,
+            })
+
+    unique = []
+    seen = set()
+    for item in candidates:
+        key = normalize_text(item["name"])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+
+    error = errors[0] if not unique and errors else ""
+    return unique, error
 
 
 LOCAL_SIGNATURES = {
@@ -791,7 +1024,6 @@ def random_three(items):
 def heritage_official_link(item):
     """역사유적명을 네이버에서 그대로 검색한 결과로 연결한다."""
     name = str(item.get("name", "") or "").strip()
-
     if not name:
         return "https://search.naver.com/search.naver"
 
@@ -907,7 +1139,7 @@ def show_place_card(item, index):
 
 
 st.title("🧭 어디갈까? 서울")
-st.write("뜻밖의 서울로 떠나봐요🎒")
+st.write("서울의 모든 행정동 중 평소 갈 이유가 없었던 동네를 랜덤으로 발견해 보세요.")
 
 if PLACES_ERROR:
     st.error(f"서울 행정동 자료를 불러오지 못했습니다: {PLACES_ERROR}")
@@ -917,6 +1149,7 @@ vworld_api_key = get_secret("VWORLD_API_KEY")
 vworld_domain = get_secret("VWORLD_DOMAIN") or "https://localhost"
 naver_client_id = get_secret("NAVER_CLIENT_ID")
 naver_client_secret = get_secret("NAVER_CLIENT_SECRET")
+solar_api_key = get_secret("SOLAR_API_KEY")
 
 with st.sidebar:
     st.header("출발지 설정")
@@ -997,10 +1230,11 @@ if st.session_state.get("condition_key") != condition_key:
     st.session_state["selected_place"] = None
     st.session_state.pop("food_picks", None)
     st.session_state.pop("cafe_picks", None)
+    st.session_state.pop("work_picks", None)
 
 header_col, button_col = st.columns([3, 1])
 with header_col:
-    st.info(f"**{len(candidates)}곳**이 기다려요")
+    st.info(f"현재 조건에 맞는 행정동: **{len(candidates)}곳** / 전체 **{len(PLACES)}곳**")
 with button_col:
     draw_clicked = st.button(
         "🎲 오늘의 동네 뽑기",
@@ -1013,6 +1247,7 @@ if draw_clicked:
     st.session_state["selected_place"] = random.choice(candidates)
     st.session_state.pop("food_picks", None)
     st.session_state.pop("cafe_picks", None)
+    st.session_state.pop("work_picks", None)
 
 if not candidates:
     st.warning("현재 조건에 맞는 행정동이 없습니다. 거리 조건을 바꿔 주세요.")
@@ -1024,7 +1259,16 @@ if not place:
     st.stop()
 
 st.header(f"오늘의 서울 여행: {place['gu']} {place['name']}")
-st.write(place["intro"])
+with st.spinner("이 동네의 특징을 살펴보는 중입니다..."):
+    neighborhood_summary, neighborhood_summary_error = generate_neighborhood_summary(
+        place["gu"],
+        place["name"],
+        naver_client_id,
+        naver_client_secret,
+        solar_api_key,
+    )
+if neighborhood_summary:
+    st.write(neighborhood_summary)
 
 metric1, metric2, metric3 = st.columns(3)
 metric1.metric("행정동", place["name"])
@@ -1052,10 +1296,12 @@ else:
     )
     st.image(
         map_url,
+        caption="브이월드 지도 · 파란색은 출발, 빨간색은 도착",
         use_container_width=True,
     )
 
 st.subheader("이 동네에서 해볼 일")
+st.caption("역사유적·문화시설·시장·공원은 각각 프로젝트의 해당 TSV 파일에서만 불러옵니다.")
 local_experiences = build_local_experiences(
     place["full_name"],
     place["gu"],
@@ -1079,6 +1325,34 @@ for index, item in enumerate(local_experiences, start=1):
                     key=f"activity_link_{index}_{facility_index}",
                     help="지도 또는 공식 페이지에서 확인",
                 )
+
+st.subheader("📚 이 동네와 관련된 문학·영화·드라마")
+st.caption("네이버 웹문서 검색에서 동네 이름과 작품 관련 단어가 함께 확인된 결과를 보여줍니다.")
+work_items, work_error = find_local_works(
+    place["gu"],
+    place["name"],
+    naver_client_id,
+    naver_client_secret,
+)
+if "work_picks" not in st.session_state:
+    st.session_state["work_picks"] = random_three(work_items)
+
+if work_error:
+    st.error(work_error)
+elif not st.session_state["work_picks"]:
+    st.info("이 동네와 관련된 작품·촬영지 검색 결과를 찾지 못했습니다.")
+else:
+    for work_index, item in enumerate(st.session_state["work_picks"], start=1):
+        name = item.get("name", "").strip()
+        url = item.get("url", "").strip()
+        if name and url:
+            st.markdown(f'{work_index}. [{name}]({url})')
+    if len(work_items) > 3 and st.button(
+        "🔄 관련 작품 정보 다시 뽑기",
+        use_container_width=True,
+    ):
+        st.session_state["work_picks"] = random_three(work_items)
+        st.rerun()
 
 food_items, food_error = search_multiple_queries(
     place["food_queries"],
@@ -1132,8 +1406,9 @@ with cafe_col:
             st.rerun()
 
 st.markdown("---")
-if st.button("🎲 다른 서울 동네 가기", use_container_width=True):
+if st.button("🎲 다른 서울 행정동 뽑기", use_container_width=True):
     st.session_state["selected_place"] = random.choice(candidates)
     st.session_state.pop("food_picks", None)
     st.session_state.pop("cafe_picks", None)
+    st.session_state.pop("work_picks", None)
     st.rerun()
