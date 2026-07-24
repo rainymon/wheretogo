@@ -9,17 +9,19 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 import requests
-import xml.etree.ElementTree as ET
 import streamlit as st
 
 
-APP_VERSION = "OFFICIAL-HERITAGE-SILENT-20260724"
 ADMIN_DONG_ZIP_URL = (
     "https://github.com/pknujsp/Korea_Administrative_Neighborhood_List/"
     "raw/refs/heads/main/korea.zip"
 )
 
-MARKET_DATA_PATH = Path(__file__).parent / "data" / "seoul_markets.tsv"
+DATA_DIR = Path(__file__).parent / "data"
+MARKET_DATA_PATH = DATA_DIR / "seoul_markets.tsv"
+HERITAGE_DATA_PATH = DATA_DIR / "seoul_heritage.tsv"
+CULTURE_DATA_PATH = DATA_DIR / "seoul_culture.tsv"
+PARK_DATA_PATH = DATA_DIR / "seoul_parks.tsv"
 
 st.set_page_config(
     page_title="어디갈까? 서울",
@@ -646,231 +648,159 @@ def fallback_local_things(place):
 
 
 
-@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
-def load_seoul_registered_heritage():
-    """국가유산청 Open API에서 서울의 지정·등록 국가유산 목록을 가져온다.
-
-    네이버 장소검색 결과를 문화유산으로 추정하지 않고, 공식 목록에 포함된
-    항목만 역사유적으로 사용한다.
-    """
-    url = "https://www.khs.go.kr/cha/SearchKindOpenapiList.do"
-    params = {
-        "pageUnit": 2000,
-        "pageIndex": 1,
-        "ccbaCtcd": "11",  # 서울특별시
-    }
-    headers = {
-        "User-Agent": "WhereToGoSeoul/1.0 educational-streamlit-app"
-    }
-
-    try:
-        response = requests.get(url, params=params, headers=headers, timeout=20)
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
-    except (requests.RequestException, ET.ParseError):
+@st.cache_data(show_spinner=False)
+def load_facility_tsv(path):
+    if not path.exists():
         return []
-
-    items = []
-    for node in root.findall(".//item"):
-        def value(tag):
-            element = node.find(tag)
-            return element.text.strip() if element is not None and element.text else ""
-
-        name = value("ccbaMnm1")
-        location = value("ccbaLcad")
-        category = value("ccmaName")
-        kind_code = value("ccbaKdcd")
-        asset_number = value("ccbaAsno")
-        city_code = value("ccbaCtcd") or "11"
-
-        if not name:
-            continue
-
-        detail_url = (
-            "https://www.khs.go.kr/cha/SearchKindOpenapiDt.do?"
-            + urlencode({
-                "ccbaKdcd": kind_code,
-                "ccbaAsno": asset_number,
-                "ccbaCtcd": city_code,
-            })
-        )
-        items.append({
-            "name": name,
-            "location": location,
-            "category": category,
-            "url": detail_url,
-        })
-
-    return items
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        return list(csv.DictReader(file, delimiter="\t"))
 
 
-def get_registered_heritage_for_place(place):
-    """선택한 행정동과 공식 국가유산 소재지를 대조한다."""
-    gu = place.get("gu", "").strip()
+SEOUL_HERITAGE = load_facility_tsv(HERITAGE_DATA_PATH)
+SEOUL_CULTURE = load_facility_tsv(CULTURE_DATA_PATH)
+SEOUL_PARKS = load_facility_tsv(PARK_DATA_PATH)
+
+
+def get_target_dong_stems(place):
     dong = place.get("name", "").strip()
-
-    target_stems = {normalize_dong_stem(dong)}
-    target_stems.update(
+    stems = {normalize_dong_stem(dong)}
+    stems.update(
         normalize_dong_stem(alias)
         for alias in ADMIN_DONG_MARKET_ALIASES.get(dong, [])
     )
-    target_stems.discard("")
+    stems.discard("")
+    return stems
 
-    matches = []
-    for heritage in load_seoul_registered_heritage():
-        location = heritage.get("location", "")
-        if gu and gu not in location:
+
+def extract_dong_stems_from_text(value):
+    """TSV 행 안의 동 표기를 정규화한다. 외부 검색 결과는 사용하지 않는다."""
+    text = str(value or "")
+    tokens = re.findall(r"[가-힣]+(?:\d+가|\d*동)", text)
+    stems = {normalize_dong_stem(token) for token in tokens}
+    stems.discard("")
+    return stems
+
+
+def match_facilities_to_place(rows, place):
+    """해당 TSV 안의 gu/dong_tokens/address 값만으로 행정동을 연결한다."""
+    gu = place.get("gu", "").strip()
+    target_stems = get_target_dong_stems(place)
+    matched = []
+
+    for row in rows:
+        if row.get("gu", "").strip() != gu:
             continue
 
-        location_tokens = re.findall(r"[가-힣]+(?:\d+가|\d*동)", location)
-        location_stems = {normalize_dong_stem(token) for token in location_tokens}
+        row_stems = {
+            normalize_dong_stem(token)
+            for token in row.get("dong_tokens", "").split("|")
+            if token.strip()
+        }
+        row_stems.update(extract_dong_stems_from_text(row.get("address", "")))
+        row_stems.discard("")
 
-        if target_stems & location_stems:
-            matches.append(heritage)
+        if target_stems & row_stems:
+            matched.append(row)
 
-    # 같은 유산 중복 방지
     unique = []
     seen = set()
-    for heritage in matches:
-        key = normalize_text(heritage["name"])
-        if key in seen:
+    for row in matched:
+        key = normalize_text(row.get("name", ""))
+        if not key or key in seen:
             continue
         seen.add(key)
-        unique.append(heritage)
-
+        unique.append(row)
     return unique
 
 
-def build_local_experiences(full_name, gu, dong, client_id, client_secret):
-    """시설을 역사유적 → 문화시설 → 시장 → 공원 순서로 반환한다.
+def random_three(items):
+    items = list(items)
+    if len(items) <= 3:
+        return items
+    return random.sample(items, 3)
 
-    각 분류에 후보가 여러 개 있으면 중복 없이 최대 3개를 무작위 선택한다.
-    """
+
+def facility_link(item):
+    """링크는 TSV의 url을 우선 사용하고, 없을 때도 같은 TSV의 이름·주소로만 만든다."""
+    url = str(item.get("url", "") or "").strip()
+    if url:
+        return url
+    query = " ".join(
+        value for value in (
+            str(item.get("name", "")).strip(),
+            str(item.get("address", "")).strip(),
+        )
+        if value
+    )
+    return naver_map_url(query) if query else ""
+
+
+def build_local_experiences(full_name, gu, dong):
+    """각 분류는 지정된 로컬 TSV에서만 읽는다."""
     place = {"full_name": full_name, "gu": gu, "name": dong}
     results = []
 
-    def random_three(items):
-        unique = []
-        seen = set()
-        for item in items:
-            name = item.get("name", "").strip()
-            key = normalize_text(name)
-            if not name or key in seen:
-                continue
-            seen.add(key)
-            unique.append(item)
-
-        if len(unique) <= 3:
-            return unique
-        return random.sample(unique, 3)
-
-    def matching_places(queries, preferred_keywords):
-        if not client_id or not client_secret:
-            return []
-
-        matches = []
-        fallbacks = []
-        seen = set()
-
-        for query in queries:
-            items, _ = naver_local_search(query, client_id, client_secret)
-            for item in items:
-                name = item.get("name", "").strip()
-                category = item.get("category", "").strip()
-                key = normalize_text(name)
-                if not name or key in seen:
-                    continue
-                seen.add(key)
-
-                combined = normalize_text(f"{name} {category}")
-                if any(normalize_text(word) in combined for word in preferred_keywords):
-                    matches.append(item)
-                else:
-                    fallbacks.append(item)
-
-        # 키워드가 맞는 결과를 우선하고, 부족할 때만 일반 검색 결과로 채운다.
-        combined_items = matches + fallbacks
-        return random_three(combined_items)
-
-    # 1. 역사유적: 국가유산청 공식 목록에 등록된 항목만 표시
-    registered_heritage = random_three(get_registered_heritage_for_place(place))
-    if registered_heritage:
+    # 1. 역사유적: data/seoul_heritage.tsv만 사용
+    heritage_items = random_three(match_facilities_to_place(SEOUL_HERITAGE, place))
+    if heritage_items:
         results.append({
             "type": "역사유적",
             "icon": "🏛️",
             "facilities": [
-                {
-                    "name": heritage["name"],
-                    "url": heritage.get("url", ""),
-                }
-                for heritage in registered_heritage
+                {"name": item.get("name", ""), "url": facility_link(item)}
+                for item in heritage_items
             ],
         })
 
-    # 2. 문화시설
-    culture_items = matching_places(
-        [
-            f"{full_name} 문화시설",
-            f"{gu} {dong} 박물관 미술관",
-            f"{gu} {dong} 도서관 문화센터 공연장",
-            f"{gu} {dong} 갤러리 전시관 문학관",
-        ],
-        ["박물관", "미술관", "도서관", "문화", "공연", "전시", "갤러리", "문학관"],
-    )
+    # 2. 문화시설: data/seoul_culture.tsv만 사용
+    culture_items = random_three(match_facilities_to_place(SEOUL_CULTURE, place))
     if culture_items:
         results.append({
             "type": "문화시설",
             "icon": "🎭",
             "facilities": [
-                {
-                    "name": item["name"],
-                    "url": item.get("url", ""),
-                }
+                {"name": item.get("name", ""), "url": facility_link(item)}
                 for item in culture_items
             ],
         })
 
-    # 3. 시장: 사용자가 제공한 서울 전통시장 목록과 행정동 연결
-    market_candidates = [
-        {
-            "name": market["name"],
-            "url": naver_map_url(market["name"]),
-        }
-        for market in get_markets_for_place(place)
-    ]
-    market_items = random_three(market_candidates)
+    # 3. 시장: data/seoul_markets.tsv만 사용
+    market_rows = get_markets_for_place(place)
+    market_items = random_three(market_rows)
     if market_items:
         results.append({
             "type": "시장",
             "icon": "🛍️",
-            "facilities": market_items,
+            "facilities": [
+                {
+                    "name": item.get("name", ""),
+                    "url": naver_map_url(
+                        " ".join(
+                            value for value in (
+                                item.get("name", ""),
+                                item.get("road_address", "") or item.get("lot_address", ""),
+                            )
+                            if value
+                        )
+                    ),
+                }
+                for item in market_items
+            ],
         })
 
-    # 4. 공원
-    park_items = matching_places(
-        [
-            f"{full_name} 공원",
-            f"{gu} {dong} 근린공원",
-            f"{gu} {dong} 산책로 하천",
-            f"{gu} {dong} 둘레길 숲 생태공원",
-        ],
-        ["공원", "산책", "하천", "둘레길", "숲", "생태", "한강", "천"],
-    )
+    # 4. 공원: data/seoul_parks.tsv만 사용
+    park_items = random_three(match_facilities_to_place(SEOUL_PARKS, place))
     if park_items:
         results.append({
             "type": "공원",
             "icon": "🌳",
             "facilities": [
-                {
-                    "name": item["name"],
-                    "url": item.get("url", ""),
-                }
+                {"name": item.get("name", ""), "url": facility_link(item)}
                 for item in park_items
             ],
         })
 
     return results
-
 
 def choose_three(items):
     if len(items) <= 3:
@@ -1049,12 +979,11 @@ else:
     )
 
 st.subheader("이 동네에서 해볼 일")
+st.caption("역사유적·문화시설·시장·공원은 각각 프로젝트의 해당 TSV 파일에서만 불러옵니다.")
 local_experiences = build_local_experiences(
     place["full_name"],
     place["gu"],
     place["name"],
-    naver_client_id,
-    naver_client_secret,
 )
 for index, item in enumerate(local_experiences, start=1):
     st.markdown(f"### {index}. {item['icon']} {item['type']}")
