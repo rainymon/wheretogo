@@ -5,6 +5,8 @@ from urllib.parse import quote, urlencode
 
 import requests
 import streamlit as st
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
 
 
 st.set_page_config(
@@ -12,6 +14,8 @@ st.set_page_config(
     page_icon="🧭",
     layout="centered",
 )
+
+APP_BUILD = "VWORLD-NAVER-3X3-20260724"
 
 # ------------------------------------------------------------
 # 기본 데이터
@@ -348,48 +352,198 @@ def estimated_minutes(distance_km):
 
 
 @st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
-def geocode_seoul(query):
+def geocode_seoul(query, vworld_key="", vworld_domain=""):
+    """브이월드 검색 API만 사용해 서울의 좌표를 찾습니다."""
     search_text = query.strip()
-    if not search_text:
-        return None
+    if not search_text or not vworld_key:
+        return None, "브이월드 API 키가 없거나 검색어가 비어 있습니다."
 
     if "서울" not in search_text:
         search_text = f"서울 {search_text}"
 
-    url = "https://nominatim.openstreetmap.org/search"
+    url = "https://api.vworld.kr/req/search"
+    common = {
+        "service": "search",
+        "request": "search",
+        "version": "2.0",
+        "query": search_text,
+        "size": 5,
+        "page": 1,
+        "format": "json",
+        "crs": "EPSG:4326",
+        "key": vworld_key,
+    }
+    if vworld_domain:
+        common["domain"] = vworld_domain
+
+    errors = []
+    for search_type, category in [("address", "road"), ("address", "parcel"), ("place", None)]:
+        params = dict(common)
+        params["type"] = search_type
+        if category:
+            params["category"] = category
+
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            data = response.json()
+            api_response = data.get("response", {})
+            if api_response.get("status") == "OK":
+                items = api_response.get("result", {}).get("items", [])
+                for item in items:
+                    point = item.get("point", {})
+                    lat = float(point["y"])
+                    lon = float(point["x"])
+                    if 37.40 <= lat <= 37.72 and 126.76 <= lon <= 127.20:
+                        title = item.get("title") or item.get("address", {}).get("road") or search_text
+                        return {"name": clean_title(str(title)), "lat": lat, "lon": lon}, ""
+            else:
+                err = api_response.get("error", {})
+                errors.append(err.get("text") or api_response.get("status", "검색 실패"))
+        except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+            errors.append(str(exc))
+
+    message = errors[-1] if errors else "서울 안에서 검색 결과를 찾지 못했습니다."
+    return None, f"브이월드 주소 검색 실패: {message}"
+
+
+def _world_pixel(lon, lat, zoom, tile_size=256):
+    """WGS84 좌표를 Web Mercator 전체 픽셀 좌표로 변환합니다."""
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    scale = tile_size * (2 ** zoom)
+    x = (lon + 180.0) / 360.0 * scale
+    sin_lat = math.sin(math.radians(lat))
+    y = (0.5 - math.log((1 + sin_lat) / (1 - sin_lat)) / (4 * math.pi)) * scale
+    return x, y
+
+
+def _map_pixel(lon, lat, center_lon, center_lat, zoom, width, height):
+    x, y = _world_pixel(lon, lat, zoom)
+    cx, cy = _world_pixel(center_lon, center_lat, zoom)
+    return int(width / 2 + (x - cx)), int(height / 2 + (y - cy))
+
+
+def _draw_pin(draw, x, y, emoji, label, fill):
+    r = 18
+    draw.ellipse((x-r, y-r, x+r, y+r), fill=fill, outline="white", width=4)
+    draw.polygon([(x-7, y+r-2), (x+7, y+r-2), (x, y+r+14)], fill=fill)
+    # 기본 폰트에서 한글/이모지가 지원되지 않을 수 있어 원 안에는 번호를 표시합니다.
+    number = "1" if "출발" in label else "2"
+    draw.text((x-4, y-8), number, fill="white")
+    box = (x-48, y-52, x+48, y-26)
+    draw.rounded_rectangle(box, radius=9, fill="white", outline=fill, width=3)
+    draw.text((x-40, y-46), label, fill="black")
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def fetch_vworld_map(start_lat, start_lon, end_lat, end_lon, api_key, domain=""):
+    """브이월드 Static Map API의 지도 이미지 위에 출발·도착 표시를 직접 그립니다."""
+    if not api_key:
+        return None, "VWORLD_API_KEY가 설정되지 않았습니다."
+
+    width, height = 900, 520
+    center_lon = (start_lon + end_lon) / 2
+    center_lat = (start_lat + end_lat) / 2
+    distance = haversine_km(start_lat, start_lon, end_lat, end_lon)
+
+    if distance < 2.5:
+        zoom = 15
+    elif distance < 5:
+        zoom = 14
+    elif distance < 11:
+        zoom = 13
+    else:
+        zoom = 12
+
     params = {
-        "q": search_text,
-        "format": "jsonv2",
-        "limit": 1,
-        "countrycodes": "kr",
-        "accept-language": "ko",
+        "service": "image",
+        "request": "getmap",
+        "version": "2.0",
+        "key": api_key,
+        "format": "png",
+        "errorFormat": "json",
+        "basemap": "GRAPHIC",
+        "center": f"{center_lon},{center_lat}",
+        "crs": "EPSG:4326",
+        "zoom": zoom,
+        "size": f"{width},{height}",
     }
-    headers = {
-        "User-Agent": "WhereToGoSeoul/1.0 educational-streamlit-app"
-    }
+    if domain:
+        params["domain"] = domain
 
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=8)
+        response = requests.get("https://api.vworld.kr/req/image", params=params, timeout=20)
+        content_type = response.headers.get("Content-Type", "").lower()
+        if not response.ok or "image" not in content_type:
+            try:
+                payload = response.json().get("response", {})
+                error = payload.get("error", {})
+                message = error.get("text") or payload.get("status") or f"HTTP {response.status_code}"
+            except ValueError:
+                message = f"HTTP {response.status_code}: {response.text[:200]}"
+            return None, f"브이월드 Static Map API 오류: {message}"
+
+        image = Image.open(BytesIO(response.content)).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        sx, sy = _map_pixel(start_lon, start_lat, center_lon, center_lat, zoom, width, height)
+        ex, ey = _map_pixel(end_lon, end_lat, center_lon, center_lat, zoom, width, height)
+
+        # 연결선
+        draw.line((sx, sy, ex, ey), fill=(125, 80, 210), width=7)
+        # 핀과 명확한 번호 표시
+        _draw_pin(draw, sx, sy, "🏠", "1 출발", (35, 105, 220))
+        _draw_pin(draw, ex, ey, "🎯", "2 도착", (235, 70, 80))
+
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue(), ""
+    except requests.RequestException as exc:
+        return None, f"브이월드 지도 연결 오류: {exc}"
+    except Exception as exc:
+        return None, f"브이월드 지도 처리 오류: {exc}"
+
+
+@st.cache_data(ttl=60 * 60 * 24 * 7, show_spinner=False)
+def commons_photo(query):
+    """Wikimedia Commons에서 활동에 어울리는 자유 이용 사진 한 장을 찾습니다."""
+    url = "https://commons.wikimedia.org/w/api.php"
+    params = {
+        "action": "query",
+        "generator": "search",
+        "gsrsearch": query,
+        "gsrnamespace": 6,
+        "gsrlimit": 8,
+        "prop": "imageinfo",
+        "iiprop": "url|extmetadata",
+        "iiurlwidth": 720,
+        "format": "json",
+        "origin": "*",
+    }
+    headers = {"User-Agent": "WhereToGoSeoul/1.0 educational-streamlit-app"}
+
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         response.raise_for_status()
-        rows = response.json()
-        if not rows:
-            return None
-
-        row = rows[0]
-        lat = float(row["lat"])
-        lon = float(row["lon"])
-
-        # 서울 주변의 엉뚱한 결과를 줄이기 위한 범위 검사
-        if not (37.40 <= lat <= 37.72 and 126.76 <= lon <= 127.20):
-            return None
-
-        return {
-            "name": row.get("display_name", search_text),
-            "lat": lat,
-            "lon": lon,
-        }
-    except (requests.RequestException, ValueError, KeyError):
-        return None
+        pages = (response.json().get("query", {}).get("pages", {}) or {}).values()
+        for page in pages:
+            infos = page.get("imageinfo", [])
+            if not infos:
+                continue
+            info = infos[0]
+            thumb = info.get("thumburl") or info.get("url")
+            if not thumb:
+                continue
+            metadata = info.get("extmetadata", {})
+            artist = html.unescape(metadata.get("Artist", {}).get("value", ""))
+            license_name = metadata.get("LicenseShortName", {}).get("value", "")
+            return {
+                "url": thumb,
+                "source": info.get("descriptionurl", "https://commons.wikimedia.org"),
+                "artist": artist,
+                "license": license_name,
+            }
+    except requests.RequestException:
+        pass
+    return None
 
 
 def clean_title(text):
@@ -411,53 +565,66 @@ def google_transit_url(origin, destination):
     )
 
 
-@st.cache_data(ttl=60 * 30, show_spinner=False)
+@st.cache_data(ttl=60 * 10, show_spinner=False)
 def naver_local_search(query, client_id, client_secret):
+    """네이버 지역검색 결과와 오류 메시지를 함께 반환합니다."""
     if not client_id or not client_secret:
-        return []
+        return [], "NAVER_CLIENT_ID 또는 NAVER_CLIENT_SECRET이 설정되지 않았습니다."
 
     url = "https://openapi.naver.com/v1/search/local.json"
     headers = {
-        "X-Naver-Client-Id": client_id,
-        "X-Naver-Client-Secret": client_secret,
+        "X-Naver-Client-Id": client_id.strip(),
+        "X-Naver-Client-Secret": client_secret.strip(),
+        "User-Agent": "WhereToGoSeoul/1.0",
+        "Accept": "application/json",
     }
-    params = {
-        "query": query,
-        "display": 5,
-        "start": 1,
-        "sort": "comment",
-    }
+    params = {"query": query, "display": 5, "start": 1, "sort": "comment"}
 
     try:
-        response = requests.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=8,
-        )
-        response.raise_for_status()
+        response = requests.get(url, headers=headers, params=params, timeout=12)
+        if response.status_code != 200:
+            try:
+                err = response.json()
+                message = err.get("errorMessage") or err.get("message") or response.text[:200]
+                code = err.get("errorCode", response.status_code)
+            except ValueError:
+                code = response.status_code
+                message = response.text[:200]
+            return [], f"네이버 지역검색 오류 {code}: {message}"
 
+        payload = response.json()
         results = []
-        for item in response.json().get("items", []):
-            name = clean_title(item.get("title", "이름 없음"))
-            results.append(
-                {
-                    "name": name,
-                    "category": item.get("category", ""),
-                    "address": item.get("roadAddress") or item.get("address", ""),
-                    "url": item.get("link") or naver_map_url(name),
-                }
-            )
-        return results
-    except requests.RequestException:
-        return []
+        seen = set()
+        for item in payload.get("items", []):
+            name = clean_title(item.get("title", "이름 없음")).strip()
+            address = (item.get("roadAddress") or item.get("address") or "").strip()
+            identity = (name, address)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            results.append({
+                "name": name,
+                "category": item.get("category", ""),
+                "address": address,
+                "url": item.get("link") or naver_map_url(f"{name} {address}"),
+            })
+        if not results:
+            return [], f"'{query}' 검색 결과가 없습니다."
+        return results, ""
+    except requests.RequestException as exc:
+        return [], f"네이버 지역검색 연결 오류: {exc}"
 
 
-def weighted_pick(items):
-    if not items:
-        return None
-    weights = [5, 4, 3, 2, 1][: len(items)]
-    return random.choices(items, weights=weights, k=1)[0]
+def weighted_sample(items, count=3):
+    """검색 상위 결과에 가중치를 주되 중복 없이 여러 곳을 선택합니다."""
+    pool = list(items)
+    selected = []
+    while pool and len(selected) < count:
+        weights = list(range(len(pool), 0, -1))
+        choice = random.choices(pool, weights=weights, k=1)[0]
+        selected.append(choice)
+        pool.remove(choice)
+    return selected
 
 
 def show_business(place, label):
@@ -477,10 +644,17 @@ def show_business(place, label):
     )
 
 
+# API 키는 화면을 만들기 전에 먼저 읽습니다.
+naver_client_id = get_secret("NAVER_CLIENT_ID")
+naver_client_secret = get_secret("NAVER_CLIENT_SECRET")
+vworld_api_key = get_secret("VWORLD_API_KEY")
+vworld_domain = get_secret("VWORLD_DOMAIN")
+
 # ------------------------------------------------------------
 # 화면
 # ------------------------------------------------------------
 st.title("🧭 어디갈까? 서울")
+st.caption(f"앱 버전: {APP_BUILD}")
 st.write(
     "유명 관광지보다 평소 갈 이유가 없었던 서울의 동네를 발견하는 랜덤 여행 앱입니다."
 )
@@ -509,8 +683,9 @@ with st.sidebar:
         )
 
         if search_clicked:
-            result = geocode_seoul(custom_query)
+            result, search_error = geocode_seoul(custom_query, vworld_api_key, vworld_domain)
             st.session_state["custom_start"] = result
+            st.session_state["custom_start_error"] = search_error
 
         custom_start = st.session_state.get("custom_start")
         if custom_start:
@@ -525,6 +700,8 @@ with st.sidebar:
             start_lat = 0.0
             start_lon = 0.0
             start_ready = False
+            if st.session_state.get("custom_start_error"):
+                st.error(st.session_state["custom_start_error"])
 
     st.markdown("---")
     st.header("여행 조건")
@@ -548,9 +725,6 @@ with st.sidebar:
         "출발지와 너무 가까운 장소 제외",
         value=True,
     )
-
-naver_client_id = get_secret("NAVER_CLIENT_ID")
-naver_client_secret = get_secret("NAVER_CLIENT_SECRET")
 
 if not start_ready:
     st.info("왼쪽에서 출발지를 검색해 주세요.")
@@ -648,17 +822,25 @@ st.caption(
     "이동시간은 직선거리를 활용한 참고값입니다. 실제 지하철·버스 경로와 시간은 위 버튼에서 확인하세요."
 )
 
-st.subheader("지도")
-st.map(
-    [
-        {"lat": start_lat, "lon": start_lon},
-        {"lat": place["lat"], "lon": place["lon"]},
-    ],
-    latitude="lat",
-    longitude="lon",
-    zoom=11,
-    use_container_width=True,
+st.subheader("브이월드 API 지도")
+st.caption("이 영역은 api.vworld.kr/req/image 응답만 표시합니다. 다른 지도 서비스로 대체하지 않습니다.")
+map_image, map_error = fetch_vworld_map(
+    start_lat,
+    start_lon,
+    place["lat"],
+    place["lon"],
+    vworld_api_key,
+    vworld_domain,
 )
+if map_image:
+    st.image(
+        map_image,
+        caption=f"🔵 출발: {start_name}  ·  🔴 도착: {place['arrival']}",
+        use_container_width=True,
+    )
+else:
+    st.error(map_error)
+    st.info("다른 지도는 대신 표시하지 않습니다. VWORLD_API_KEY와 VWORLD_DOMAIN, 브이월드 활용 API 권한을 확인하세요.")
 
 map_col1, map_col2 = st.columns(2)
 map_col1.link_button(
@@ -673,45 +855,99 @@ map_col2.link_button(
 )
 
 st.subheader("이 동네에서 해볼 일")
-for item in place["things"]:
-    st.markdown(f"- {item}")
+thing_columns = st.columns(3)
+for index, item in enumerate(place["things"]):
+    with thing_columns[index % 3]:
+        photo = commons_photo(f"{place['name']} {item} Seoul")
+        if not photo:
+            photo = commons_photo(f"{place['name']} Seoul")
+        if photo:
+            st.image(photo["url"], use_container_width=True)
+            credit = " · ".join(
+                value for value in [photo.get("artist"), photo.get("license")] if value
+            )
+            if credit:
+                st.caption(f"사진: Wikimedia Commons · {credit}")
+        else:
+            st.info("관련 사진을 찾지 못했습니다.")
+        st.markdown(f"**{item}**")
 
 random_missions = random.sample(MISSIONS, k=2)
 for item in random_missions:
     st.markdown(f"- 미션: **{item}**")
 
 st.markdown("---")
-st.subheader("동네 맛집과 카페")
+st.subheader("오늘의 식당 3곳 · 오늘의 카페 3곳")
+
+with st.expander("API 연결 상태 확인"):
+    st.write(f"브이월드 키: {'설정됨' if vworld_api_key else '없음'}")
+    st.write(f"브이월드 도메인: {vworld_domain or '미설정'}")
+    st.write(f"네이버 Client ID: {'설정됨' if naver_client_id else '없음'}")
+    st.write(f"네이버 Client Secret: {'설정됨' if naver_client_secret else '없음'}")
 
 if naver_client_id and naver_client_secret:
-    food_items = naver_local_search(
+    food_items, food_error = naver_local_search(
         place["food_query"],
         naver_client_id,
         naver_client_secret,
     )
-    cafe_items = naver_local_search(
+    cafe_items, cafe_error = naver_local_search(
         place["cafe_query"],
         naver_client_id,
         naver_client_secret,
     )
 
     if "food_pick" not in st.session_state:
-        st.session_state["food_pick"] = weighted_pick(food_items)
+        st.session_state["food_pick"] = weighted_sample(food_items, count=3)
     if "cafe_pick" not in st.session_state:
-        st.session_state["cafe_pick"] = weighted_pick(cafe_items)
+        st.session_state["cafe_pick"] = weighted_sample(cafe_items, count=3)
 
-    food_tab, cafe_tab = st.tabs(["🍚 오늘의 식당", "☕ 오늘의 카페"])
+    food_tab, cafe_tab = st.tabs(["🍚 오늘의 식당 3곳", "☕ 오늘의 카페 3곳"])
 
     with food_tab:
-        show_business(st.session_state.get("food_pick"), "식당")
-        if st.button("식당 다시 뽑기", use_container_width=True):
-            st.session_state["food_pick"] = weighted_pick(food_items)
+        food_picks = st.session_state.get("food_pick", [])
+        if food_picks:
+            for index, business in enumerate(food_picks, start=1):
+                st.markdown(f"#### {index}. {business['name']}")
+                if business.get("category"):
+                    st.write(business["category"])
+                if business.get("address"):
+                    st.write(business["address"])
+                st.link_button(
+                    f"{index}번 식당 네이버 지도에서 확인",
+                    business["url"],
+                    use_container_width=True,
+                )
+                if index < len(food_picks):
+                    st.divider()
+        else:
+            st.error(food_error or "식당 검색 결과가 없습니다.")
+            st.link_button("네이버 지도에서 직접 검색", naver_map_url(place["food_query"]), use_container_width=True)
+        if st.button("식당 3곳 다시 뽑기", use_container_width=True):
+            st.session_state["food_pick"] = weighted_sample(food_items, count=3)
             st.rerun()
 
     with cafe_tab:
-        show_business(st.session_state.get("cafe_pick"), "카페")
-        if st.button("카페 다시 뽑기", use_container_width=True):
-            st.session_state["cafe_pick"] = weighted_pick(cafe_items)
+        cafe_picks = st.session_state.get("cafe_pick", [])
+        if cafe_picks:
+            for index, business in enumerate(cafe_picks, start=1):
+                st.markdown(f"#### {index}. {business['name']}")
+                if business.get("category"):
+                    st.write(business["category"])
+                if business.get("address"):
+                    st.write(business["address"])
+                st.link_button(
+                    f"{index}번 카페 네이버 지도에서 확인",
+                    business["url"],
+                    use_container_width=True,
+                )
+                if index < len(cafe_picks):
+                    st.divider()
+        else:
+            st.error(cafe_error or "카페 검색 결과가 없습니다.")
+            st.link_button("네이버 지도에서 직접 검색", naver_map_url(place["cafe_query"]), use_container_width=True)
+        if st.button("카페 3곳 다시 뽑기", use_container_width=True):
+            st.session_state["cafe_pick"] = weighted_sample(cafe_items, count=3)
             st.rerun()
 else:
     st.write("네이버 지도에서 이 동네의 식당과 카페를 바로 찾아볼 수 있습니다.")
