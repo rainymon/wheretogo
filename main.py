@@ -24,7 +24,7 @@ CULTURE_DATA_PATH = DATA_DIR / "seoul_culture.tsv"
 PARK_DATA_PATH = DATA_DIR / "seoul_parks.tsv"
 
 st.set_page_config(
-    page_title="서울마실",
+    page_title="어디갈까? 서울",
     page_icon="🧭",
     layout="wide",
 )
@@ -42,7 +42,7 @@ START_POINTS = {
 }
 
 EXCLUDED_BRANDS = {
-    "스타벅스", "투썸플레이스", "이디야", "메가커피", "메가MGC커피",
+    "스타벅스", "투썸플레이스", "이디야", "메가커피", "메가엠지씨커피",
     "컴포즈커피", "빽다방", "더벤티", "할리스", "엔제리너스", "폴바셋",
     "커피빈", "탐앤탐스", "파스쿠찌", "파리바게뜨", "파리바게트",
     "뚜레쥬르", "배스킨라빈스", "베스킨라빈스", "던킨", "설빙",
@@ -788,8 +788,20 @@ def random_three(items):
     return random.sample(items, 3)
 
 
+def heritage_official_link(item):
+    """유산명을 국가유산청 공식 사이트 범위에서 검색한다."""
+    name = str(item.get("name", "") or "").strip()
+    if not name:
+        return "https://www.heritage.go.kr/"
+
+    # 국가유산포털의 내부 검색 주소는 변경되거나 검색어가 전달되지 않는
+    # 경우가 있어, 공식 도메인만 대상으로 검색하는 링크를 사용한다.
+    query = f'site:heritage.go.kr OR site:cha.go.kr "{name}"'
+    return "https://search.naver.com/search.naver?query=" + quote(query)
+
+
 def facility_link(item):
-    """링크는 TSV의 url을 우선 사용하고, 없을 때도 같은 TSV의 이름·주소로만 만든다."""
+    """문화시설·공원은 TSV의 URL을 우선 사용하고 없으면 지도 검색 링크를 만든다."""
     url = str(item.get("url", "") or "").strip()
     if url:
         return url
@@ -809,28 +821,16 @@ def build_local_experiences(full_name, gu, dong):
     results = []
 
     # 1. 역사유적: data/seoul_heritage.tsv만 사용
-   # 1. 역사유적: seoul_heritage.tsv만 사용
-heritage_items = random_three(
-    match_facilities_to_place(SEOUL_HERITAGE, place)
-)
-
-if heritage_items:
-    results.append({
-        "type": "역사유적",
-        "icon": "🏛️",
-        "facilities": [
-            {
-                "name": item.get("name", ""),
-                "url": (
-                    "https://search.naver.com/search.naver?query="
-                    + quote(
-                        f'site:heritage.go.kr "{item.get("name", "")}"'
-                    )
-                ),
-            }
-            for item in heritage_items
-        ],
-    })
+    heritage_items = random_three(match_facilities_to_place(SEOUL_HERITAGE, place))
+    if heritage_items:
+        results.append({
+            "type": "역사유적",
+            "icon": "🏛️",
+            "facilities": [
+                {"name": item.get("name", ""), "url": heritage_official_link(item)}
+                for item in heritage_items
+            ],
+        })
 
     # 2. 문화시설: data/seoul_culture.tsv만 사용
     culture_items = random_three(match_facilities_to_place(SEOUL_CULTURE, place))
@@ -908,8 +908,8 @@ def show_place_card(item, index):
             st.write(item["address"])
 
 
-st.title("🧭서울마실")
-st.write("이 동네는 어때요?")
+st.title("🧭 어디갈까? 서울")
+st.write("서울의 모든 행정동 중 평소 갈 이유가 없었던 동네를 랜덤으로 발견해 보세요.")
 
 if PLACES_ERROR:
     st.error(f"서울 행정동 자료를 불러오지 못했습니다: {PLACES_ERROR}")
@@ -1002,7 +1002,7 @@ if st.session_state.get("condition_key") != condition_key:
 
 header_col, button_col = st.columns([3, 1])
 with header_col:
-    st.info(f"**{len(candidates)}곳**이 기다려요")
+    st.info(f"현재 조건에 맞는 행정동: **{len(candidates)}곳** / 전체 **{len(PLACES)}곳**")
 with button_col:
     draw_clicked = st.button(
         "🎲 오늘의 동네 뽑기",
@@ -1022,7 +1022,7 @@ if not candidates:
 
 place = st.session_state.get("selected_place")
 if not place:
-    st.info("버튼을 눌러 오늘의 서울 동네를 뽑아보세요.")
+    st.info("버튼을 눌러 오늘의 서울 행정동을 뽑아보세요.")
     st.stop()
 
 st.header(f"오늘의 서울 여행: {place['gu']} {place['name']}")
@@ -1054,10 +1054,12 @@ else:
     )
     st.image(
         map_url,
+        caption="브이월드 지도 · 파란색은 출발, 빨간색은 도착",
         use_container_width=True,
     )
 
 st.subheader("이 동네에서 해볼 일")
+st.caption("역사유적·문화시설·시장·공원은 각각 프로젝트의 해당 TSV 파일에서만 불러옵니다.")
 local_experiences = build_local_experiences(
     place["full_name"],
     place["gu"],
@@ -1093,6 +1095,13 @@ cafe_items, cafe_error = search_multiple_queries(
     naver_client_secret,
 )
 
+# 네이버 지역검색에서 카페처럼 노출되더라도 분류가 "장소대여"인 곳은 제외합니다.
+cafe_items = [
+    item
+    for item in cafe_items
+    if "장소대여" not in str(item.get("category", ""))
+]
+
 if "food_picks" not in st.session_state:
     st.session_state["food_picks"] = choose_three(food_items)
 if "cafe_picks" not in st.session_state:
@@ -1127,7 +1136,7 @@ with cafe_col:
             st.rerun()
 
 st.markdown("---")
-if st.button("🎲 다른 동네 가기", use_container_width=True):
+if st.button("🎲 다른 서울 행정동 뽑기", use_container_width=True):
     st.session_state["selected_place"] = random.choice(candidates)
     st.session_state.pop("food_picks", None)
     st.session_state.pop("cafe_picks", None)
