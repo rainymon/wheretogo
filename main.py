@@ -502,7 +502,7 @@ def naver_local_search(
         response.raise_for_status()
         items = response.json().get("items", [])
         results = []
-        for rank, item in enumerate(items, start=1):
+        for item in items:
             name = clean_naver_title(item.get("title", "이름 없음"))
             results.append(
                 {
@@ -511,7 +511,6 @@ def naver_local_search(
                     "address": item.get("roadAddress") or item.get("address", ""),
                     "rating": None,
                     "reviews": None,
-                    "rank": rank,
                     "url": item.get("link") or naver_map_search_url(name),
                     "source": "네이버 지역검색",
                 }
@@ -519,39 +518,6 @@ def naver_local_search(
         return results
     except requests.RequestException:
         return []
-
-
-def choose_popular_random_place(items: list) -> dict:
-    """검색 상위 업체가 더 자주 선택되도록 가중 랜덤 추천합니다."""
-    if not items:
-        return {}
-
-    # sort=comment 검색 순서 기준: 1위 5, 2위 4, ... 5위 1의 가중치
-    weights = list(range(len(items), 0, -1))
-    return random.choices(items, weights=weights, k=1)[0]
-
-
-def show_featured_naver_place(item: dict, label: str) -> None:
-    if not item:
-        st.info(f"추천할 {label} 검색 결과가 없습니다.")
-        return
-
-    rank = item.get("rank")
-    rank_text = f"검색 상위 {rank}번째 후보" if rank else "인기 검색 후보"
-    st.success(f"🎯 오늘의 랜덤 {label}: {item['name']}")
-    st.caption(
-        f"네이버 지역검색의 카페·블로그 리뷰 기반 정렬 결과 중 {rank_text}에서 "
-        "가중 랜덤으로 선택했습니다."
-    )
-    st.write(item.get("category", ""))
-    st.write(item.get("address", ""))
-    if item.get("url"):
-        st.link_button(
-            "네이버 지도에서 후기 확인",
-            item["url"],
-            type="primary",
-            use_container_width=True,
-        )
 
 
 def show_place_cards(items: list) -> None:
@@ -785,25 +751,10 @@ with tab_restaurant:
             naver_client_secret,
             max_results=5,
         )
-        restaurant_state_key = f"featured_restaurant::{trip['city']}::{restaurant_query}"
-        reroll_restaurant = st.button(
-            "🎲 인기 맛집 다시 뽑기",
-            key=f"reroll_restaurant::{trip['city']}",
-            use_container_width=True,
-        )
-        if restaurant_state_key not in st.session_state or reroll_restaurant:
-            st.session_state[restaurant_state_key] = choose_popular_random_place(
-                restaurant_results
-            )
-        show_featured_naver_place(
-            st.session_state.get(restaurant_state_key, {}),
-            "맛집",
-        )
-        with st.expander("인기 검색 후보 전체 보기"):
-            show_place_cards(restaurant_results)
+        show_place_cards(restaurant_results)
         st.info(
-            "네이버 지역검색은 sort='comment'로 카페·블로그 리뷰가 많은 순서의 "
-            "상위 후보를 반환하지만, 실제 후기 개수와 지도 별점은 제공하지 않습니다."
+            "네이버 지역검색 Open API는 업체명·주소·분류 등을 제공하지만 "
+            "네이버 지도 별점은 응답에 포함하지 않습니다."
         )
     else:
         st.write("API 키가 없어 실시간 업체 목록 대신 지도 검색 버튼을 제공합니다.")
@@ -836,25 +787,10 @@ with tab_cafe:
             naver_client_secret,
             max_results=5,
         )
-        cafe_state_key = f"featured_cafe::{trip['city']}::{cafe_query}"
-        reroll_cafe = st.button(
-            "🎲 인기 카페 다시 뽑기",
-            key=f"reroll_cafe::{trip['city']}",
-            use_container_width=True,
-        )
-        if cafe_state_key not in st.session_state or reroll_cafe:
-            st.session_state[cafe_state_key] = choose_popular_random_place(
-                cafe_results
-            )
-        show_featured_naver_place(
-            st.session_state.get(cafe_state_key, {}),
-            "카페",
-        )
-        with st.expander("인기 검색 후보 전체 보기"):
-            show_place_cards(cafe_results)
+        show_place_cards(cafe_results)
         st.info(
-            "네이버 지역검색은 sort='comment'로 카페·블로그 리뷰가 많은 순서의 "
-            "상위 후보를 반환하지만, 실제 후기 개수와 지도 별점은 제공하지 않습니다."
+            "네이버 지역검색 Open API는 업체명·주소·분류 등을 제공하지만 "
+            "네이버 지도 별점은 응답에 포함하지 않습니다."
         )
     else:
         st.write("API 키가 없어 실시간 업체 목록 대신 지도 검색 버튼을 제공합니다.")
